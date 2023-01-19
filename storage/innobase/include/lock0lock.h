@@ -1011,6 +1011,15 @@ struct LockGuard
   }
   /** @return the hash array cell */
   hash_cell_t &cell() const { return *cell_; }
+
+  /** Releases cell latch, executes some code, acquires cell latch again.
+  @ param f the functor which will be executed after cell latch is released */
+  template<typename F>
+  void reacqure_cell_latch(F &&f) {
+    lock_sys_t::hash_table::latch(cell_)->release();
+    f();
+    lock_sys_t::hash_table::latch(cell_)->acquire();
+  }
 private:
   /** The hash array cell */
   hash_cell_t *cell_;
@@ -1027,7 +1036,37 @@ struct LockMultiGuard
   hash_cell_t &cell1() const { return *cell1_; }
   /** @return the second hash array cell */
   hash_cell_t &cell2() const { return *cell2_; }
+
+  /** Releases cell latches, executes some code, acquires cell latch again.
+  @param f the functor which will be executed after cell latch is released */
+  template<typename F>
+  void reacqure_cell_latch(F &&f) {
+    release_cell_latches();
+    f();
+    acquire_cell_latches();
+  }
+
 private:
+  void acquire_cell_latches()
+  {
+    auto latch1= lock_sys_t::hash_table::latch(cell1_),
+         latch2= lock_sys_t::hash_table::latch(cell2_);
+    if (latch1 > latch2)
+      std::swap(latch1, latch2);
+    latch1->acquire();
+    if (latch1 != latch2)
+      latch2->acquire();
+  }
+
+  void release_cell_latches()
+  {
+    auto latch1= lock_sys_t::hash_table::latch(cell1_),
+         latch2= lock_sys_t::hash_table::latch(cell2_);
+    latch1->release();
+    if (latch1 != latch2)
+      latch2->release();
+  }
+
   /** The first hash array cell */
   hash_cell_t *cell1_;
   /** The second hash array cell */
@@ -1203,25 +1242,23 @@ void lock_rec_discard(lock_sys_t::hash_table &lock_hash, lock_t *in_lock);
 
 /** Create a new record lock and inserts it to the lock queue,
 without checking for deadlocks or conflicts.
-@param[in]	c_lock		conflicting lock, or NULL
-@param[in]	type_mode	lock mode and wait flag
-@param[in]	page_id		index page number
-@param[in]	page		R-tree index page, or NULL
-@param[in]	heap_no		record heap number in the index page
-@param[in]	index		the index tree
-@param[in,out]	trx		transaction
-@param[in]	holds_trx_mutex	whether the caller holds trx->mutex
-@return created lock */
-lock_t*
-lock_rec_create_low(
-	lock_t*		c_lock,
-	unsigned	type_mode,
-	const page_id_t	page_id,
-	const page_t*	page,
-	ulint		heap_no,
-	dict_index_t*	index,
-	trx_t*		trx,
-	bool		holds_trx_mutex);
+@param  c_lock          conflicting lock
+@param  type_mode       lock mode and wait flag
+@param  page_id         index page number
+@param  page            R-tree index page, or NULL
+@param  heap_no         record heap number in the index page
+@param  index           the index tree
+@param  trx             transaction
+@param  holds_trx_mutex whether the caller holds trx->mutex
+@param  try_wait_lock   should we try to lock lock_sys.wait_mutex before
+                        changing trx->lock.wait_lock or not
+@return created lock or nullptr if the try of lock_sys.wait_mutex locking is
+failed */
+lock_t *lock_rec_create_low(const lock_t *c_lock, unsigned type_mode,
+                            const page_id_t page_id, const page_t *page,
+                            ulint heap_no, const dict_index_t *index,
+                            trx_t *trx, bool holds_trx_mutex,
+                            bool wait_lock_type= false);
 
 /** Enqueue a waiting request for a lock which cannot be granted immediately.
 Check for deadlocks.
