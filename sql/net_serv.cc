@@ -1003,6 +1003,8 @@ retry:
     {
       while (remain > 0)
       {
+        if (net->thd)
+          DEBUG_SYNC((THD *)net->thd, "my_real_read");
         if ((long) (length= vio_read(net->vio, pos, remain)) <= 0L)
         {
 #if !defined(_WIN32) || !defined(MYSQL_SERVER)
